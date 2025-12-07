@@ -1,5 +1,16 @@
 {
+  "name": "dyad-workspace",
+  "version": "1.0.0",
+  "description": "DYAD WORKSPACE - Full-stack development environment",
+  "scripts": {
+    "dev": "concurrently --names \"WORKSPACE,BACKBENCH\" --prefix-colors \"cyan,magenta\" \"npm run dev:workspace\" \"npm run dev:backbench\"",
+    "dev:workspace": "cd bolt.diy && npm run dev",
+    "dev:backbench": "cd dyad && npm run dev:server-only",
+    "workspace": "cd bolt.diy && npm run dev",
+    "backbench": "cd dyad && npm run dev:server-only"
+  },
   "devDependencies": {
+    "concurrently": "^8.2.2",
     "drizzle-kit": "^0.31.4",
     "drizzle-orm": "^0.44.4"
   },

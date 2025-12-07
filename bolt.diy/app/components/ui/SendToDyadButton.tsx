@@ -1,9 +1,6 @@
 // app/components/ui/SendToDyadButton.tsx
 import React, { useState } from 'react';
 import { workbenchStore } from '~/lib/stores/workbench';
-import { useAuth } from '../auth/AuthProvider';
-import { LoginModal } from '../auth/LoginModal';
-import { CredentialSetupModal } from '../auth/CredentialSetupModal';
 
 interface Props {
   defaultProjectName?: string;
@@ -20,11 +17,8 @@ export default function SendToDyadButton({
   buttonId,
   chatId
 }: Props) {
-  const { isAuthenticated, token } = useAuth();
   const [running, setRunning] = useState(false);
   const [status, setStatus] = useState('');
-  const [showLoginModal, setShowLoginModal] = useState(false);
-  const [showCredentialModal, setShowCredentialModal] = useState(false);
 
   // Get current chat ID from URL if not provided
   const getCurrentChatId = () => {
@@ -40,31 +34,7 @@ export default function SendToDyadButton({
   };
 
   async function handleClick() {
-    // Check authentication first
-    if (!isAuthenticated) {
-      setShowLoginModal(true);
-      return;
-    }
-
-    // Check if user has credentials
-    try {
-      const credsResponse = await fetch(`${VITE_DYAD_BACKEND_URL}/api/credentials`, {
-        headers: { 'Authorization': `Bearer ${token}` },
-      });
-
-      if (credsResponse.ok) {
-        const data: { credentials?: string[] } = await credsResponse.json();
-        if (!data.credentials || !data.credentials.includes('github_token')) {
-          // User doesn't have GitHub token, show credential setup
-          setShowCredentialModal(true);
-          return;
-        }
-      }
-    } catch (err) {
-      console.error('Error checking credentials:', err);
-    }
-
-    // Proceed with deployment
+    // No authentication check - proceed directly with deployment
     setRunning(true);
     setStatus('Reading files from workspace...');
 
@@ -157,8 +127,7 @@ export default function SendToDyadButton({
       const resp = await fetch(`${VITE_DYAD_BACKEND_URL}/api/sync/files`, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}` // Include auth token
+          'Content-Type': 'application/json'
         },
         body: JSON.stringify({
           projectId,
@@ -187,53 +156,27 @@ export default function SendToDyadButton({
     }
   }
 
-  const handleLoginSuccess = () => {
-    // After login, show credential setup
-    setShowLoginModal(false);
-    setShowCredentialModal(true);
-  };
-
-  const handleCredentialComplete = () => {
-    setShowCredentialModal(false);
-    // Automatically trigger deployment after credentials are set
-    handleClick();
-  };
-
   return (
-    <>
-      <div>
-        <button
-          id={buttonId || undefined}
-          onClick={handleClick}
-          disabled={running}
-          className="flex items-center gap-2 px-4 py-2 text-xs font-black uppercase tracking-wider bg-white text-black hover:bg-black hover:text-white border-2 border-white transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-        >
-          {running ? (
-            <>
-              <div className="i-ph:spinner animate-spin text-base" />
-              <span>Sending...</span>
-            </>
-          ) : (
-            <>
-              <div className="i-ph:upload text-base" />
-              <span>Send to Dyad</span>
-            </>
-          )}
-        </button>
-        {status && <div className="mt-2 text-xs text-white font-mono">{status}</div>}
-      </div>
-
-      <LoginModal
-        isOpen={showLoginModal}
-        onClose={() => setShowLoginModal(false)}
-        onSuccess={handleLoginSuccess}
-      />
-
-      <CredentialSetupModal
-        isOpen={showCredentialModal}
-        onClose={() => setShowCredentialModal(false)}
-        onComplete={handleCredentialComplete}
-      />
-    </>
+    <div>
+      <button
+        id={buttonId || undefined}
+        onClick={handleClick}
+        disabled={running}
+        className="flex items-center gap-2 px-4 py-2 text-xs font-black uppercase tracking-wider bg-white text-black hover:bg-black hover:text-white border-2 border-white transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+      >
+        {running ? (
+          <>
+            <div className="i-ph:spinner animate-spin text-base" />
+            <span>Sending...</span>
+          </>
+        ) : (
+          <>
+            <div className="i-ph:upload text-base" />
+            <span>Send to Dyad</span>
+          </>
+        )}
+      </button>
+      {status && <div className="mt-2 text-xs text-white font-mono">{status}</div>}
+    </div>
   );
 }

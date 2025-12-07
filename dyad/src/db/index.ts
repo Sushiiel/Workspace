@@ -56,15 +56,60 @@ export function initializeDatabase(): BetterSQLite3Database<typeof schema> & {
   _db = drizzle(sqlite, { schema });
 
   try {
-    const migrationsFolder = path.join(__dirname, "..", "..", "drizzle");
-    if (!fs.existsSync(migrationsFolder)) {
-      logger.error("Migrations folder not found:", migrationsFolder);
-    } else {
-      logger.log("Running migrations from:", migrationsFolder);
-      migrate(_db, { migrationsFolder });
+    // Try multiple possible migration folder locations for different deployment scenarios
+    const possibleMigrationPaths = [
+      path.join(__dirname, "..", "..", "drizzle"), // Standard build
+      path.join(process.cwd(), "drizzle"), // Running from project root
+      path.join(__dirname, "..", "..", "..", "drizzle"), // Nested build
+      path.join(__dirname, "drizzle"), // Same directory
+    ];
+
+    let migrationsFolder: string | null = null;
+
+    for (const migPath of possibleMigrationPaths) {
+      if (fs.existsSync(migPath)) {
+        const metaPath = path.join(migPath, "meta", "_journal.json");
+        if (fs.existsSync(metaPath)) {
+          migrationsFolder = migPath;
+          logger.log("✅ Found migrations folder at:", migPath);
+          break;
+        }
+      }
     }
-  } catch (error) {
-    logger.error("Migration error:", error);
+
+    if (!migrationsFolder) {
+      logger.warn("⚠️ Migrations folder not found in any expected location");
+      logger.warn("Attempted paths:", possibleMigrationPaths);
+      logger.warn("Database may need manual migration. Creating tables if they don't exist...");
+
+      // Create a minimal schema if migrations aren't found
+      // This ensures the server can at least start
+      try {
+        // Check if tables exist by trying a simple query
+        sqlite.prepare("SELECT COUNT(*) FROM bolt_projects LIMIT 1").get();
+        logger.log("✅ Database tables already exist");
+      } catch (error) {
+        logger.error("❌ Database tables don't exist and migrations not found");
+        logger.error("Please ensure migration files are deployed with your application");
+        throw new Error("Database schema not initialized. Migration files missing.");
+      }
+    } else {
+      logger.log("🔄 Running migrations from:", migrationsFolder);
+      migrate(_db, { migrationsFolder });
+      logger.log("✅ Migrations completed successfully");
+    }
+  } catch (error: any) {
+    logger.error("❌ Migration error:", error);
+    logger.error("Error details:", error.message);
+
+    // Don't throw in production, log the error and continue
+    // This allows the server to start even if migrations fail
+    if (process.env.NODE_ENV === 'production') {
+      logger.warn("⚠️ Continuing in production mode despite migration error");
+      logger.warn("Database operations may fail if schema is not up to date");
+    } else {
+      throw error;
+    }
   }
 
   return _db as any;

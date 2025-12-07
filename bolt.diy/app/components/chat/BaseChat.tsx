@@ -355,7 +355,7 @@ export const BaseChat = React.forwardRef<HTMLDivElement, BaseChatProps>(
             'w-full': !showWorkbench,
             'w-[30%]': showWorkbench
           })}>
-            {!chatStarted && (
+            {!chatStarted && (messages?.length ?? 0) === 0 && (
               <div id="intro" className="mt-[14vh] max-w-5xl mx-auto text-center px-8">
                 <div className="mb-8 inline-block">
                   <div className="flex items-center gap-3 px-6 py-3 bg-white text-black border-4 border-white">
@@ -390,7 +390,9 @@ export const BaseChat = React.forwardRef<HTMLDivElement, BaseChatProps>(
               <StickToBottom.Content className="flex flex-col gap-4 relative ">
                 <ClientOnly>
                   {() => {
-                    return chatStarted ? (
+                    // Show messages when chat has started OR when there are messages
+                    const shouldShowMessages = chatStarted || (messages?.length ?? 0) > 0;
+                    return shouldShowMessages ? (
                       <Messages
                         className="flex flex-col w-full flex-1 max-w-7xl pb-4 mx-auto z-1"
                         messages={messages}

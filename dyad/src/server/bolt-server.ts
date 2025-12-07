@@ -3958,11 +3958,10 @@ import { createServer } from 'http';
 import { db, initializeDatabase } from '../db';
 import { eq, and, desc } from 'drizzle-orm';
 import crypto from 'crypto';
-import { projects, files, users, userCredentials, deployments, analytics, projectStats } from '../db/schema';
+import { projects, files, deployments, analytics, projectStats } from '../db/schema';
 import { Octokit } from '@octokit/rest';
 import fetch from 'node-fetch';
 import dotenv from "dotenv"
-import { hashPassword, verifyPassword, generateToken, authenticateToken, optionalAuth, AuthRequest } from './auth';
 import { encryptCredential, decryptCredential } from './encryption';
 import { nanoid } from 'nanoid';
 dotenv.config();
@@ -4002,6 +4001,13 @@ app.use(cors({
 
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+
+// ==================== PROJECT ROUTES ====================
+import projectRoutes from './routes/projects';
+
+app.use('/api', projectRoutes); // Mounts /api/projects, /api/sync/files, etc.
+
+// ==================== Helper Functions ====================
 
 // ==================== AI File Editing Functions ====================
 
@@ -4591,22 +4597,11 @@ async function deployToGitHub(
   try {
     console.log(`Starting GitHub deployment for project: ${projectName}`);
 
-    // Get user's GitHub credentials or fall back to environment variables
-    let githubToken: string | null = userGithubToken || null;
+    // Use GitHub token from environment variable
+    let githubToken: string | null = userGithubToken || GITHUB_TOKEN || null;
 
     if (!githubToken) {
-      if (userId === 'system') {
-        // Backward compatibility: use environment variable
-        githubToken = GITHUB_TOKEN || null;
-        console.log('Using GITHUB_TOKEN from environment variables (unauthenticated mode)');
-      } else {
-        // Authenticated user: get from database
-        githubToken = await getUserCredential(userId, 'github_token');
-      }
-    }
-
-    if (!githubToken) {
-      throw new Error('GitHub token not found. Please configure your credentials or set GITHUB_TOKEN environment variable.');
+      throw new Error('GitHub token not found. Please set GITHUB_TOKEN environment variable.');
     }
 
     // Get GitHub owner from token (or use default)
@@ -4782,35 +4777,13 @@ async function getVercelCredentials(userId: string): Promise<{
   token: string;
   orgId?: string;
 }> {
-  if (userId === 'system') {
-    // Use environment variables for unauthenticated users
-    if (!VERCEL_TOKEN) {
-      throw new Error('Vercel token not configured in environment variables');
-    }
-    return {
-      token: VERCEL_TOKEN,
-      orgId: undefined
-    };
+  // Use environment variables for credentials
+  if (!VERCEL_TOKEN) {
+    throw new Error('Vercel token not configured. Please set VERCEL_TOKEN environment variable.');
   }
-
-  // Get user's Vercel credentials from database
-  const token = await getUserCredential(userId, 'vercel_token');
-  const orgId = await getUserCredential(userId, 'vercel_org_id');
-
-  if (!token) {
-    // Fall back to environment variables
-    if (!VERCEL_TOKEN) {
-      throw new Error('Vercel token not found. Please configure your credentials.');
-    }
-    return {
-      token: VERCEL_TOKEN,
-      orgId: undefined
-    };
-  }
-
   return {
-    token,
-    orgId: orgId || undefined
+    token: VERCEL_TOKEN,
+    orgId: undefined
   };
 }
 
@@ -4831,7 +4804,8 @@ async function deployToVercel(
     const { token, orgId } = await getVercelCredentials(userId);
 
     // First, get the GitHub repository ID
-    const githubToken = userId === 'system' ? GITHUB_TOKEN : await getUserCredential(userId, 'github_token');
+    // Use GitHub token from environment variable
+    const githubToken = GITHUB_TOKEN;
     const repoResponse = await fetch(`https://api.github.com/repos/${githubOwner}/${projectName}`, {
       headers: {
         'Authorization': `token ${githubToken || ''}`,
@@ -5191,8 +5165,9 @@ async function handleBulkFileSync(data: any) {
   }
 }
 
-// ==================== Authentication Routes ====================
-
+// ==================== Authentication Routes (OLD - NOW USING routes/auth.ts) ====================
+// These routes have been replaced by modular route files
+/*
 app.post('/api/auth/register', async (req, res) => {
   try {
     const { email, password, name } = req.body;
@@ -5230,8 +5205,11 @@ app.post('/api/auth/register', async (req, res) => {
     console.error('Registration error:', error);
     res.status(500).json({ error: 'Registration failed' });
   }
-});
+*/
 
+// ==================== Authentication \u0026 Credential Management Routes (DISABLED) ====================
+// Authentication has been removed from the system
+/*
 app.post('/api/auth/login', async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -5289,7 +5267,7 @@ app.get('/api/auth/me', authenticateToken, async (req: AuthRequest, res) => {
   }
 });
 
-// ==================== Credential Management Routes ====================
+// ==================== Credential Management Routes (DISABLED) ====================
 
 app.post('/api/credentials', authenticateToken, async (req: AuthRequest, res) => {
   try {
@@ -5374,29 +5352,7 @@ app.delete('/api/credentials/:type', authenticateToken, async (req: AuthRequest,
     res.status(500).json({ error: 'Failed to delete credential' });
   }
 });
-
-// Helper function to get user's decrypted credential
-async function getUserCredential(userId: string, type: string): Promise<string | null> {
-  try {
-    const creds = await db.select().from(userCredentials)
-      .where(and(
-        eq(userCredentials.userId, userId),
-        eq(userCredentials.credentialType, type as any)
-      ))
-      .limit(1);
-
-    if (creds.length === 0) {
-      return null;
-    }
-
-    const cred = creds[0];
-    const [encryptedValue, authTag] = cred.encryptedValue.split(':');
-    return decryptCredential(encryptedValue, cred.iv, authTag);
-  } catch (error) {
-    console.error('Error getting credential:', error);
-    return null;
-  }
-}
+*/
 
 // ==================== API Routes ====================
 
@@ -5412,16 +5368,11 @@ app.get('/api/projects/:id/files', async (req, res) => {
   }
 });
 
-app.post('/api/projects/:id/push', optionalAuth, async (req: AuthRequest, res) => {
+app.post('/api/projects/:id/push', async (req: any, res: any) => {
   try {
     const { id } = req.params;
-    const userId = req.user?.userId;
 
-    if (userId) {
-      console.log(`Push to GitHub request for project: ${id} by user: ${userId}`);
-    } else {
-      console.log(`Push to GitHub request for project: ${id} (unauthenticated - using env vars)`);
-    }
+    console.log(`Push to GitHub request for project: ${id}`);
 
     const project = await db.select().from(projects).where(eq(projects.id, id)).limit(1);
 
@@ -5429,13 +5380,8 @@ app.post('/api/projects/:id/push', optionalAuth, async (req: AuthRequest, res) =
       return res.status(404).json({ error: 'Project not found' });
     }
 
-    // If authenticated, verify the project belongs to the user
-    if (userId && project[0].userId && project[0].userId !== userId) {
-      return res.status(403).json({ error: 'Unauthorized: Project does not belong to you' });
-    }
-
-    // Use userId if authenticated, otherwise use 'system' for backward compatibility
-    const deployUserId = userId || 'system';
+    // Use 'system' as default user for all deployments
+    const deployUserId = 'system';
 
     const { githubToken, vercelToken, vercelOrgId, vercelProjectId } = req.body;
 
@@ -5618,6 +5564,10 @@ app.get('/api/projects/:id/export', async (req, res) => {
   }
 });
 
+// OLD AUTH ROUTES COMMENTED OUT ABOVE - NOW USING routes/auth.ts and routes/projects.ts
+
+// OLD /api/sync/files route - NOW HANDLED BY routes/projects.ts
+/*
 app.post('/api/sync/files', optionalAuth, async (req: AuthRequest, res) => {
   try {
     const { projectId, files: filesList, projectName, framework, template } = req.body;
@@ -5645,6 +5595,7 @@ app.post('/api/sync/files', optionalAuth, async (req: AuthRequest, res) => {
     res.status(500).json({ error: 'Sync failed' });
   }
 });
+*/
 
 // ==================== DEPLOYMENT & ANALYTICS ENDPOINTS ====================
 
@@ -7552,494 +7503,528 @@ app.get('/dyad', (req, res) => {
                     <h2 style={{ color: 'white', marginBottom: '1.5rem' }}>Deployment Analytics</h2>
                     
                     {/* Project Selector */}
-                    {!deploymentDetails && (
-                        <div style={{ marginBottom: '1.5rem' }}>
-                            <label style={{ color: 'white', display: 'block', marginBottom: '0.5rem' }}>
-                                Select Project:
-                            </label>
-                            <select 
-                                className="input"
-                                value={selectedAnalyticsProject || ''}
-                                onChange={(e) => setSelectedAnalyticsProject(e.target.value)}
-                                style={{ width: '100%', maxWidth: '400px' }}
+{
+  !deploymentDetails && (
+    <div style={ { marginBottom: '1.5rem' } }>
+      <label style={ { color: 'white', display: 'block', marginBottom: '0.5rem' } }>
+        Select Project:
+  </label>
+    < select
+  className = "input"
+  value = { selectedAnalyticsProject || ''
+}
+onChange = {(e) => setSelectedAnalyticsProject(e.target.value)}
+style = {{ width: '100%', maxWidth: '400px' }}
                             >
-                                <option value="">All Projects</option>
-                                {uniqueProjects.map(projectId => (
-                                    <option key={projectId} value={projectId}>{projectId}</option>
-                                ))}
-                            </select>
-                        </div>
+  <option value="" > All Projects </option>
+{
+  uniqueProjects.map(projectId => (
+    <option key= { projectId } value = { projectId } > { projectId } </option>
+  ))
+}
+</select>
+  </div>
                     )}
 
-                    {/* Overview Cards */}
-                    {projectStats && !deploymentDetails && (
-                        <div style={{ 
-                            display: 'grid', 
-                            gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', 
-                            gap: '1rem', 
-                            marginBottom: '1.5rem' 
-                        }}>
-                            <div style={{ 
-                                background: 'rgba(255, 255, 255, 0.1)', 
-                                padding: '1rem', 
-                                borderRadius: '8px',
-                                border: '1px solid rgba(255, 255, 255, 0.2)'
-                            }}>
-                                <div style={{ color: '#9ca3af', fontSize: '0.875rem', marginBottom: '0.5rem' }}>
-                                    Total Deployments
-                                </div>
-                                <div style={{ color: 'white', fontSize: '2rem', fontWeight: 'bold' }}>
-                                    {projectStats.totalDeployments}
-                                </div>
-                            </div>
-                            <div style={{ 
-                                background: 'rgba(16, 185, 129, 0.1)', 
-                                padding: '1rem', 
-                                borderRadius: '8px',
-                                border: '1px solid rgba(16, 185, 129, 0.3)'
-                            }}>
-                                <div style={{ color: '#9ca3af', fontSize: '0.875rem', marginBottom: '0.5rem' }}>
-                                    Successful
-                                </div>
-                                <div style={{ color: '#10b981', fontSize: '2rem', fontWeight: 'bold' }}>
-                                    {projectStats.successfulDeployments}
-                                </div>
-                            </div>
-                            <div style={{ 
-                                background: 'rgba(239, 68, 68, 0.1)', 
-                                padding: '1rem', 
-                                borderRadius: '8px',
-                                border: '1px solid rgba(239, 68, 68, 0.3)'
-                            }}>
-                                <div style={{ color: '#9ca3af', fontSize: '0.875rem', marginBottom: '0.5rem' }}>
-                                    Failed
-                                </div>
-                                <div style={{ color: '#ef4444', fontSize: '2rem', fontWeight: 'bold' }}>
-                                    {projectStats.failedDeployments}
-                                </div>
-                            </div>
-                            <div style={{ 
-                                background: 'rgba(255, 255, 255, 0.1)', 
-                                padding: '1rem', 
-                                borderRadius: '8px',
-                                border: '1px solid rgba(255, 255, 255, 0.2)'
-                            }}>
-                                <div style={{ color: '#9ca3af', fontSize: '0.875rem', marginBottom: '0.5rem' }}>
-                                    Avg Build Time
-                                </div>
-                                <div style={{ color: 'white', fontSize: '2rem', fontWeight: 'bold' }}>
-                                    {formatDuration(projectStats.averageBuildTime)}
-                                </div>
-                            </div>
-                        </div>
+{/* Overview Cards */ }
+{
+  projectStats && !deploymentDetails && (
+    <div style={
+      {
+        display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+            gap: '1rem',
+              marginBottom: '1.5rem'
+      }
+  }>
+    <div style={
+      {
+        background: 'rgba(255, 255, 255, 0.1)',
+          padding: '1rem',
+            borderRadius: '8px',
+              border: '1px solid rgba(255, 255, 255, 0.2)'
+      }
+  }>
+    <div style={ { color: '#9ca3af', fontSize: '0.875rem', marginBottom: '0.5rem' } }>
+      Total Deployments
+        </div>
+        < div style = {{ color: 'white', fontSize: '2rem', fontWeight: 'bold' }
+}>
+  { projectStats.totalDeployments }
+  </div>
+  </div>
+  < div style = {{
+  background: 'rgba(16, 185, 129, 0.1)',
+    padding: '1rem',
+      borderRadius: '8px',
+        border: '1px solid rgba(16, 185, 129, 0.3)'
+}}>
+  <div style={ { color: '#9ca3af', fontSize: '0.875rem', marginBottom: '0.5rem' } }>
+    Successful
+    </div>
+    < div style = {{ color: '#10b981', fontSize: '2rem', fontWeight: 'bold' }}>
+      { projectStats.successfulDeployments }
+      </div>
+      </div>
+      < div style = {{
+  background: 'rgba(239, 68, 68, 0.1)',
+    padding: '1rem',
+      borderRadius: '8px',
+        border: '1px solid rgba(239, 68, 68, 0.3)'
+}}>
+  <div style={ { color: '#9ca3af', fontSize: '0.875rem', marginBottom: '0.5rem' } }>
+    Failed
+    </div>
+    < div style = {{ color: '#ef4444', fontSize: '2rem', fontWeight: 'bold' }}>
+      { projectStats.failedDeployments }
+      </div>
+      </div>
+      < div style = {{
+  background: 'rgba(255, 255, 255, 0.1)',
+    padding: '1rem',
+      borderRadius: '8px',
+        border: '1px solid rgba(255, 255, 255, 0.2)'
+}}>
+  <div style={ { color: '#9ca3af', fontSize: '0.875rem', marginBottom: '0.5rem' } }>
+    Avg Build Time
+      </div>
+      < div style = {{ color: 'white', fontSize: '2rem', fontWeight: 'bold' }}>
+        { formatDuration(projectStats.averageBuildTime) }
+        </div>
+        </div>
+        </div>
                     )}
 
-                    {/* Deployments List */}
-                    <div style={{ flex: 1, overflowY: 'auto' }}>
-                        {!deploymentDetails && (
-                            <h3 style={{ color: 'white', marginBottom: '1rem' }}>
-                                {selectedAnalyticsProject ? 'Project Deployments' : 'All Deployments'}
-                            </h3>
+{/* Deployments List */ }
+<div style={ { flex: 1, overflowY: 'auto' } }>
+  {!deploymentDetails && (
+    <h3 style={ { color: 'white', marginBottom: '1rem' } }>
+      { selectedAnalyticsProject? 'Project Deployments': 'All Deployments' }
+      </h3>
                         )}
-                        
-                        {loading ? (
-                            <div style={{ textAlign: 'center', color: 'white', padding: '2rem' }}>
-                                <i className="fas fa-spinner fa-spin" style={{ fontSize: '2rem' }}></i>
-                                <div style={{ marginTop: '1rem' }}>Loading analytics...</div>
-                            </div>
+
+{
+  loading ? (
+    <div style= {{ textAlign: 'center', color: 'white', padding: '2rem' }
+}>
+  <i className="fas fa-spinner fa-spin" style = {{ fontSize: '2rem' }}> </i>
+    < div style = {{ marginTop: '1rem' }}> Loading analytics...</div>
+      </div>
                         ) : !deploymentDetails ? (
-                            <div style={{ 
-                                background: 'rgba(0, 0, 0, 0.3)', 
-                                borderRadius: '8px', 
-                                overflow: 'hidden',
-                                border: '1px solid rgba(255, 255, 255, 0.2)'
-                            }}>
-                                <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                                    <thead>
-                                        <tr style={{ background: 'rgba(255, 255, 255, 0.05)' }}>
-                                            <th style={{ padding: '0.75rem', textAlign: 'left', color: '#9ca3af', fontWeight: '600' }}>Status</th>
-                                            <th style={{ padding: '0.75rem', textAlign: 'left', color: '#9ca3af', fontWeight: '600' }}>Project</th>
-                                            <th style={{ padding: '0.75rem', textAlign: 'left', color: '#9ca3af', fontWeight: '600' }}>URL</th>
-                                            <th style={{ padding: '0.75rem', textAlign: 'left', color: '#9ca3af', fontWeight: '600' }}>Build Time</th>
-                                            <th style={{ padding: '0.75rem', textAlign: 'left', color: '#9ca3af', fontWeight: '600' }}>Created</th>
-                                            <th style={{ padding: '0.75rem', textAlign: 'left', color: '#9ca3af', fontWeight: '600' }}>Actions</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        {(projectStats?.deployments || allDeployments).map((deployment) => (
-                                            <tr 
-                                                key={deployment.id}
-                                                style={{ 
-                                                    borderTop: '1px solid rgba(255, 255, 255, 0.1)',
-                                                    cursor: 'pointer',
-                                                    background: selectedDeployment?.id === deployment.id ? 'rgba(255, 255, 255, 0.1)' : 'transparent'
-                                                }}
-                                                onClick={() => loadDeploymentDetails(deployment.id)}
+  <div style= {{
+  background: 'rgba(0, 0, 0, 0.3)',
+    borderRadius: '8px',
+      overflow: 'hidden',
+        border: '1px solid rgba(255, 255, 255, 0.2)'
+}}>
+  <table style={ { width: '100%', borderCollapse: 'collapse' } }>
+    <thead>
+    <tr style={ { background: 'rgba(255, 255, 255, 0.05)' } }>
+      <th style={ { padding: '0.75rem', textAlign: 'left', color: '#9ca3af', fontWeight: '600' } }> Status </th>
+        < th style = {{ padding: '0.75rem', textAlign: 'left', color: '#9ca3af', fontWeight: '600' }}> Project </th>
+          < th style = {{ padding: '0.75rem', textAlign: 'left', color: '#9ca3af', fontWeight: '600' }}> URL </th>
+            < th style = {{ padding: '0.75rem', textAlign: 'left', color: '#9ca3af', fontWeight: '600' }}> Build Time </th>
+              < th style = {{ padding: '0.75rem', textAlign: 'left', color: '#9ca3af', fontWeight: '600' }}> Created </th>
+                < th style = {{ padding: '0.75rem', textAlign: 'left', color: '#9ca3af', fontWeight: '600' }}> Actions </th>
+                  </tr>
+                  </thead>
+                  <tbody>
+{
+  (projectStats?.deployments || allDeployments).map((deployment) => (
+    <tr 
+                                                key= { deployment.id }
+                                                style = {{
+    borderTop: '1px solid rgba(255, 255, 255, 0.1)',
+    cursor: 'pointer',
+    background: selectedDeployment?.id === deployment.id ? 'rgba(255, 255, 255, 0.1)' : 'transparent'
+  }}
+onClick = {() => loadDeploymentDetails(deployment.id)}
                                             >
-                                                <td style={{ padding: '0.75rem' }}>
-                                                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                                                        <i 
-                                                            className={getStateIcon(deployment.state)}
-                                                            style={{ color: getStateColor(deployment.state) }}
-                                                        ></i>
-                                                        <span style={{ color: getStateColor(deployment.state), fontSize: '0.875rem' }}>
-                                                            {deployment.state}
-                                                        </span>
-                                                    </div>
-                                                </td>
-                                                <td style={{ padding: '0.75rem', color: 'white', fontSize: '0.875rem' }}>
-                                                    {deployment.projectName || 'N/A'}
-                                                </td>
-                                                <td style={{ padding: '0.75rem' }}>
-                                                    {deployment.url ? (
-                                                        <a 
-                                                            href={deployment.url} 
+  <td style={ { padding: '0.75rem' } }>
+    <div style={ { display: 'flex', alignItems: 'center', gap: '0.5rem' } }>
+      <i 
+                                                            className={ getStateIcon(deployment.state) }
+style = {{ color: getStateColor(deployment.state) }}
+                                                        > </i>
+  < span style = {{ color: getStateColor(deployment.state), fontSize: '0.875rem' }}>
+    { deployment.state }
+    </span>
+    </div>
+    </td>
+    < td style = {{ padding: '0.75rem', color: 'white', fontSize: '0.875rem' }}>
+      { deployment.projectName || 'N/A' }
+      </td>
+      < td style = {{ padding: '0.75rem' }}>
+      {
+        deployment.url ? (
+          <a 
+                                                            href= { deployment.url } 
                                                             target="_blank" 
                                                             rel="noopener noreferrer"
                                                             style={{ color: '#3b82f6', textDecoration: 'none', fontSize: '0.875rem' }}
-                                                            onClick={(e) => e.stopPropagation()}
+onClick = {(e) => e.stopPropagation()}
                                                         >
-                                                            <i className="fas fa-external-link-alt" style={{ marginRight: '0.25rem' }}></i>
-                                                            Visit
-                                                        </a>
+  <i className="fas fa-external-link-alt" style = {{ marginRight: '0.25rem' }}> </i>
+Visit
+  </a>
                                                     ) : (
-                                                        <span style={{ color: '#6b7280', fontSize: '0.875rem' }}>N/A</span>
+  <span style= {{ color: '#6b7280', fontSize: '0.875rem' }}> N / A </span>
                                                     )}
-                                                </td>
-                                                <td style={{ padding: '0.75rem', color: 'white', fontSize: '0.875rem' }}>
-                                                    {formatDuration(deployment.buildTime)}
-                                                </td>
-                                                <td style={{ padding: '0.75rem', color: 'white', fontSize: '0.875rem' }}>
-                                                    {formatDate(deployment.createdAt)}
-                                                </td>
-                                                <td style={{ padding: '0.75rem' }}>
-                                                    <button
+</td>
+  < td style = {{ padding: '0.75rem', color: 'white', fontSize: '0.875rem' }}>
+    { formatDuration(deployment.buildTime) }
+    </td>
+    < td style = {{ padding: '0.75rem', color: 'white', fontSize: '0.875rem' }}>
+      { formatDate(deployment.createdAt) }
+      </td>
+      < td style = {{ padding: '0.75rem' }}>
+        <button
                                                         className="btn btn-secondary"
-                                                        style={{ fontSize: '0.75rem', padding: '0.25rem 0.5rem' }}
-                                                        onClick={(e) => {
-                                                            e.stopPropagation();
-                                                            loadDeploymentDetails(deployment.id);
-                                                        }}
+style = {{ fontSize: '0.75rem', padding: '0.25rem 0.5rem' }}
+onClick = {(e) => {
+  e.stopPropagation();
+  loadDeploymentDetails(deployment.id);
+}}
                                                     >
-                                                        Details
-                                                    </button>
-                                                </td>
-                                            </tr>
+  Details
+  </button>
+  </td>
+  </tr>
                                         ))}
-                                    </tbody>
-                                </table>
-                                
-                                {(projectStats?.deployments || allDeployments).length === 0 && (
-                                    <div style={{ textAlign: 'center', color: '#6b7280', padding: '2rem' }}>
-                                        No deployments found
-                                    </div>
-                                )}
-                            </div>
+</tbody>
+  </table>
+
+{
+  (projectStats?.deployments || allDeployments).length === 0 && (
+    <div style={ { textAlign: 'center', color: '#6b7280', padding: '2rem' } }>
+      No deployments found
+        </div>
+                                )
+}
+</div>
                         ) : null}
 
-                        {/* Deployment Details */}
-                        {deploymentDetails && (
-                            <div style={{ 
-                                marginTop: '1.5rem', 
-                                background: 'rgba(0, 0, 0, 0.3)', 
-                                borderRadius: '8px', 
-                                padding: '1.5rem',
-                                border: '1px solid rgba(255, 255, 255, 0.2)'
-                            }}>
-                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-                                    <h3 style={{ color: 'white', margin: 0 }}>Deployment Details</h3>
-                                    <button 
-                                        className="btn btn-secondary"
-                                        onClick={() => {
-                                            setSelectedDeployment(null);
-                                            setDeploymentDetails(null);
-                                        }}
-                                        style={{ fontSize: '0.875rem' }}
+{/* Deployment Details */ }
+{
+  deploymentDetails && (
+    <div style={
+      {
+        marginTop: '1.5rem',
+          background: 'rgba(0, 0, 0, 0.3)',
+            borderRadius: '8px',
+              padding: '1.5rem',
+                border: '1px solid rgba(255, 255, 255, 0.2)'
+      }
+  }>
+    <div style={ { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' } }>
+      <h3 style={ { color: 'white', margin: 0 } }> Deployment Details </h3>
+        < button
+  className = "btn btn-secondary"
+  onClick = {() => {
+    setSelectedDeployment(null);
+    setDeploymentDetails(null);
+  }
+}
+style = {{ fontSize: '0.875rem' }}
                                     >
-                                        Close
-                                    </button>
-                                </div>
+  Close
+  </button>
+  </div>
 
-                                {deploymentDetails.url && (
-                                    <div style={{ marginBottom: '1.5rem' }}>
-                                        <a 
-                                            href={deploymentDetails.url} 
-                                            target="_blank" 
-                                            rel="noopener noreferrer"
-                                            className="btn btn-primary"
-                                            style={{ width: '100%', textAlign: 'center' }}
+{
+  deploymentDetails.url && (
+    <div style={ { marginBottom: '1.5rem' } }>
+      <a 
+                                            href={ deploymentDetails.url }
+  target = "_blank"
+  rel = "noopener noreferrer"
+  className = "btn btn-primary"
+  style = {{ width: '100%', textAlign: 'center' }
+}
                                         >
-                                            <i className="fas fa-external-link-alt" style={{ marginRight: '0.5rem' }}></i>
+  <i className="fas fa-external-link-alt" style = {{ marginRight: '0.5rem' }}> </i>
                                             Visit Deployment
-                                        </a>
-                                    </div>
+  </a>
+  </div>
                                 )}
 
-                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginBottom: '1.5rem' }}>
-                                    <div>
-                                        <div style={{ color: '#9ca3af', fontSize: '0.875rem', marginBottom: '0.25rem' }}>Deployment ID</div>
-                                        <div style={{ color: 'white', fontSize: '0.875rem', fontFamily: 'monospace' }}>{deploymentDetails.id}</div>
-                                    </div>
-                                    <div>
-                                        <div style={{ color: '#9ca3af', fontSize: '0.875rem', marginBottom: '0.25rem' }}>Status</div>
-                                        <div style={{ color: getStateColor(deploymentDetails.state), fontSize: '0.875rem', fontWeight: 'bold' }}>
-                                            {deploymentDetails.state}
-                                        </div>
-                                    </div>
-                                    <div>
-                                        <div style={{ color: '#9ca3af', fontSize: '0.875rem', marginBottom: '0.25rem' }}>Build Time</div>
-                                        <div style={{ color: 'white', fontSize: '0.875rem' }}>{formatDuration(deploymentDetails.buildTime)}</div>
-                                    </div>
-                                    <div>
-                                        <div style={{ color: '#9ca3af', fontSize: '0.875rem', marginBottom: '0.25rem' }}>Created At</div>
-                                        <div style={{ color: 'white', fontSize: '0.875rem' }}>{formatDate(deploymentDetails.createdAt)}</div>
-                                    </div>
-                                </div>
+<div style={ { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginBottom: '1.5rem' } }>
+  <div>
+  <div style={ { color: '#9ca3af', fontSize: '0.875rem', marginBottom: '0.25rem' } }> Deployment ID </div>
+    < div style = {{ color: 'white', fontSize: '0.875rem', fontFamily: 'monospace' }}> { deploymentDetails.id } </div>
+      </div>
+      < div >
+      <div style={ { color: '#9ca3af', fontSize: '0.875rem', marginBottom: '0.25rem' } }> Status </div>
+        < div style = {{ color: getStateColor(deploymentDetails.state), fontSize: '0.875rem', fontWeight: 'bold' }}>
+          { deploymentDetails.state }
+          </div>
+          </div>
+          < div >
+          <div style={ { color: '#9ca3af', fontSize: '0.875rem', marginBottom: '0.25rem' } }> Build Time </div>
+            < div style = {{ color: 'white', fontSize: '0.875rem' }}> { formatDuration(deploymentDetails.buildTime) } </div>
+              </div>
+              < div >
+              <div style={ { color: '#9ca3af', fontSize: '0.875rem', marginBottom: '0.25rem' } }> Created At </div>
+                < div style = {{ color: 'white', fontSize: '0.875rem' }}> { formatDate(deploymentDetails.createdAt) } </div>
+                  </div>
+                  </div>
 
-                                {(deploymentDetails.source || deploymentDetails.meta) && (
-                                    <div style={{ marginTop: '1rem', paddingTop: '1rem', borderTop: '1px solid rgba(255, 255, 255, 0.1)' }}>
-                                        <h4 style={{ color: 'white', marginBottom: '0.75rem' }}>Source & Target</h4>
-                                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
-                                            <div>
-                                                <div style={{ color: '#9ca3af', fontSize: '0.875rem', marginBottom: '0.25rem' }}>Commit</div>
-                                                <div style={{ color: 'white', fontSize: '0.875rem', fontFamily: 'monospace' }}>
-                                                    {(deploymentDetails.source?.commit || deploymentDetails.meta?.githubCommitSha || '').substring(0, 7) || 'N/A'}
-                                                </div>
-                                            </div>
-                                            <div>
-                                                <div style={{ color: '#9ca3af', fontSize: '0.875rem', marginBottom: '0.25rem' }}>Branch</div>
-                                                <div style={{ color: 'white', fontSize: '0.875rem' }}>
-                                                    {deploymentDetails.source?.branch || deploymentDetails.meta?.githubCommitRef || 'N/A'}
-                                                </div>
-                                            </div>
-                                            <div style={{ gridColumn: 'span 2' }}>
-                                                <div style={{ color: '#9ca3af', fontSize: '0.875rem', marginBottom: '0.25rem' }}>Message</div>
-                                                <div style={{ color: 'white', fontSize: '0.875rem' }}>
-                                                    {deploymentDetails.source?.message || deploymentDetails.meta?.githubCommitMessage || 'N/A'}
-                                                </div>
-                                            </div>
-                                            <div>
-                                                <div style={{ color: '#9ca3af', fontSize: '0.875rem', marginBottom: '0.25rem' }}>Author</div>
-                                                <div style={{ color: 'white', fontSize: '0.875rem' }}>
-                                                    {deploymentDetails.source?.author || deploymentDetails.meta?.githubCommitAuthorName || 'N/A'}
-                                                </div>
-                                            </div>
-                                            <div>
-                                                <div style={{ color: '#9ca3af', fontSize: '0.875rem', marginBottom: '0.25rem' }}>Target</div>
-                                                <div style={{ color: 'white', fontSize: '0.875rem' }}>
-                                                    {deploymentDetails.target || 'production'}
-                                                </div>
-                                            </div>
-                                        </div>
-                                    </div>
+{
+  (deploymentDetails.source || deploymentDetails.meta) && (
+    <div style={ { marginTop: '1rem', paddingTop: '1rem', borderTop: '1px solid rgba(255, 255, 255, 0.1)' } }>
+      <h4 style={ { color: 'white', marginBottom: '0.75rem' } }> Source & Target </h4>
+        < div style = {{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }
+}>
+  <div>
+  <div style={ { color: '#9ca3af', fontSize: '0.875rem', marginBottom: '0.25rem' } }> Commit </div>
+    < div style = {{ color: 'white', fontSize: '0.875rem', fontFamily: 'monospace' }}>
+      {(deploymentDetails.source?.commit || deploymentDetails.meta?.githubCommitSha || '').substring(0, 7) || 'N/A'}
+</div>
+  </div>
+  < div >
+  <div style={ { color: '#9ca3af', fontSize: '0.875rem', marginBottom: '0.25rem' } }> Branch </div>
+    < div style = {{ color: 'white', fontSize: '0.875rem' }}>
+      { deploymentDetails.source?.branch || deploymentDetails.meta?.githubCommitRef || 'N/A' }
+      </div>
+      </div>
+      < div style = {{ gridColumn: 'span 2' }}>
+        <div style={ { color: '#9ca3af', fontSize: '0.875rem', marginBottom: '0.25rem' } }> Message </div>
+          < div style = {{ color: 'white', fontSize: '0.875rem' }}>
+            { deploymentDetails.source?.message || deploymentDetails.meta?.githubCommitMessage || 'N/A' }
+            </div>
+            </div>
+            < div >
+            <div style={ { color: '#9ca3af', fontSize: '0.875rem', marginBottom: '0.25rem' } }> Author </div>
+              < div style = {{ color: 'white', fontSize: '0.875rem' }}>
+                { deploymentDetails.source?.author || deploymentDetails.meta?.githubCommitAuthorName || 'N/A' }
+                </div>
+                </div>
+                < div >
+                <div style={ { color: '#9ca3af', fontSize: '0.875rem', marginBottom: '0.25rem' } }> Target </div>
+                  < div style = {{ color: 'white', fontSize: '0.875rem' }}>
+                    { deploymentDetails.target || 'production' }
+                    </div>
+                    </div>
+                    </div>
+                    </div>
                                 )}
 
-                                {(deploymentDetails.regions?.length > 0 || deploymentDetails.routes?.length > 0) && (
-                                    <div style={{ marginTop: '1rem', paddingTop: '1rem', borderTop: '1px solid rgba(255, 255, 255, 0.1)' }}>
-                                        <h4 style={{ color: 'white', marginBottom: '0.75rem' }}>Configuration</h4>
-                                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
-                                            {deploymentDetails.regions?.length > 0 && (
-                                                <div>
-                                                    <div style={{ color: '#9ca3af', fontSize: '0.875rem', marginBottom: '0.25rem' }}>Regions</div>
-                                                    <div style={{ color: 'white', fontSize: '0.875rem' }}>
-                                                        {deploymentDetails.regions.join(', ')}
-                                                    </div>
-                                                </div>
+{
+  (deploymentDetails.regions?.length > 0 || deploymentDetails.routes?.length > 0) && (
+    <div style={ { marginTop: '1rem', paddingTop: '1rem', borderTop: '1px solid rgba(255, 255, 255, 0.1)' } }>
+      <h4 style={ { color: 'white', marginBottom: '0.75rem' } }> Configuration </h4>
+        < div style = {{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }
+}>
+{
+  deploymentDetails.regions?.length > 0 && (
+    <div>
+    <div style={ { color: '#9ca3af', fontSize: '0.875rem', marginBottom: '0.25rem' } }> Regions </div>
+      < div style = {{ color: 'white', fontSize: '0.875rem' }}>
+        { deploymentDetails.regions.join(', ') }
+        </div>
+        </div>
                                             )}
-                                            {deploymentDetails.routes?.length > 0 && (
-                                                <div>
-                                                    <div style={{ color: '#9ca3af', fontSize: '0.875rem', marginBottom: '0.25rem' }}>Routes</div>
-                                                    <div style={{ color: 'white', fontSize: '0.875rem' }}>
-                                                        {deploymentDetails.routes.length} configured
-                                                    </div>
-                                                </div>
+{
+  deploymentDetails.routes?.length > 0 && (
+    <div>
+    <div style={ { color: '#9ca3af', fontSize: '0.875rem', marginBottom: '0.25rem' } }> Routes </div>
+      < div style = {{ color: 'white', fontSize: '0.875rem' }
+}>
+  { deploymentDetails.routes.length } configured
+    </div>
+    </div>
                                             )}
-                                        </div>
-                                    </div>
+</div>
+  </div>
                                 )}
 
-                                {deploymentDetails.logs && deploymentDetails.logs.length > 0 && (
-                                    <div style={{ marginTop: '1rem', paddingTop: '1rem', borderTop: '1px solid rgba(255, 255, 255, 0.1)' }}>
-                                        <h4 style={{ color: 'white', marginBottom: '0.75rem' }}>Build Logs</h4>
-                                        <div style={{ 
-                                            background: '#1a1a1a', 
-                                            padding: '1rem', 
-                                            borderRadius: '4px', 
-                                            maxHeight: '300px', 
-                                            overflowY: 'auto',
-                                            fontFamily: 'monospace',
-                                            fontSize: '0.8rem',
-                                            color: '#e5e7eb'
-                                        }}>
-                                            {deploymentDetails.logs.map((log, i) => (
-                                                <div key={i} style={{ marginBottom: '0.25rem', whiteSpace: 'pre-wrap' }}>
-                                                    <span style={{ color: '#6b7280', marginRight: '0.5rem' }}>
-                                                        {new Date(log.created || log.date).toLocaleTimeString()}
-                                                    </span>
-                                                    <span style={{ 
-                                                        color: log.type === 'error' ? '#ef4444' : 
-                                                               log.type === 'warning' ? '#f59e0b' : '#e5e7eb' 
-                                                    }}>
-                                                        {log.text || log.message || log.info || JSON.stringify(log)}
-                                                    </span>
-                                                </div>
+{
+  deploymentDetails.logs && deploymentDetails.logs.length > 0 && (
+    <div style={ { marginTop: '1rem', paddingTop: '1rem', borderTop: '1px solid rgba(255, 255, 255, 0.1)' } }>
+      <h4 style={ { color: 'white', marginBottom: '0.75rem' } }> Build Logs </h4>
+        < div style = {{
+    background: '#1a1a1a',
+      padding: '1rem',
+        borderRadius: '4px',
+          maxHeight: '300px',
+            overflowY: 'auto',
+              fontFamily: 'monospace',
+                fontSize: '0.8rem',
+                  color: '#e5e7eb'
+  }
+}>
+{
+  deploymentDetails.logs.map((log, i) => (
+    <div key= { i } style = {{ marginBottom: '0.25rem', whiteSpace: 'pre-wrap' }} >
+  <span style={ { color: '#6b7280', marginRight: '0.5rem' } }>
+    { new Date(log.created || log.date).toLocaleTimeString() }
+    </span>
+    < span style = {{
+  color: log.type === 'error' ? '#ef4444' :
+    log.type === 'warning' ? '#f59e0b' : '#e5e7eb'
+}}>
+  { log.text || log.message || log.info || JSON.stringify(log) }
+  </span>
+  </div>
                                             ))}
-                                        </div>
-                                    </div>
+</div>
+  </div>
                                 )}
-                            </div>
+</div>
                         )}
 
-                    </div>
-                </div>
+</div>
+  </div>
             );
         }
-        function DeployModal({ onClose, onDeploy, loading }) {
-            const [githubToken, setGithubToken] = useState('');
-            const [vercelToken, setVercelToken] = useState('');
-            const [vercelOrgId, setVercelOrgId] = useState('');
-            const [vercelProjectId, setVercelProjectId] = useState('');
+function DeployModal({ onClose, onDeploy, loading }) {
+  const [githubToken, setGithubToken] = useState('');
+  const [vercelToken, setVercelToken] = useState('');
+  const [vercelOrgId, setVercelOrgId] = useState('');
+  const [vercelProjectId, setVercelProjectId] = useState('');
 
-            const handleSubmit = (e) => {
-                e.preventDefault();
-                onDeploy({ githubToken, vercelToken, vercelOrgId, vercelProjectId });
-            };
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    onDeploy({ githubToken, vercelToken, vercelOrgId, vercelProjectId });
+  };
 
-            return (
-                <div className="modal-overlay">
-                    <div className="modal-content">
-                        <h3 style={{ color: 'white', marginBottom: '0.5rem' }}>Deploy to GitHub & Vercel</h3>
-                        <p style={{ color: '#9ca3af', fontSize: '0.875rem', marginBottom: '1.5rem' }}>
-                            Leave fields empty to use environment variables
-                        </p>
-                        <form onSubmit={handleSubmit}>
-                            <div className="form-group">
-                                <label style={{ display: 'block', marginBottom: '0.5rem', color: '#ccc' }}>
-                                    GitHub Token <span style={{ color: '#9ca3af', fontSize: '0.875rem' }}>(optional)</span>
-                                </label>
-                                <input 
-                                    type="password" 
-                                    className="input" 
-                                    value={githubToken} 
-                                    onChange={e => setGithubToken(e.target.value)}
-                                    placeholder="ghp_... (or use GITHUB_TOKEN env var)"
-                                    style={{ width: '100%', marginBottom: '1rem' }}
+  return (
+    <div className= "modal-overlay" >
+    <div className="modal-content" >
+      <h3 style={ { color: 'white', marginBottom: '0.5rem' } }> Deploy to GitHub & Vercel </h3>
+        < p style = {{ color: '#9ca3af', fontSize: '0.875rem', marginBottom: '1.5rem' }
+}>
+  Leave fields empty to use environment variables
+    </p>
+    < form onSubmit = { handleSubmit } >
+      <div className="form-group" >
+        <label style={ { display: 'block', marginBottom: '0.5rem', color: '#ccc' } }>
+          GitHub Token < span style = {{ color: '#9ca3af', fontSize: '0.875rem' }}> (optional) </span>
+            </label>
+            < input
+type = "password"
+className = "input"
+value = { githubToken }
+onChange = { e => setGithubToken(e.target.value) }
+placeholder = "ghp_... (or use GITHUB_TOKEN env var)"
+style = {{ width: '100%', marginBottom: '1rem' }}
                                 />
-                            </div>
-                            <div className="form-group">
-                                <label style={{ display: 'block', marginBottom: '0.5rem', color: '#ccc' }}>
-                                    Vercel Token <span style={{ color: '#9ca3af', fontSize: '0.875rem' }}>(optional)</span>
-                                </label>
-                                <input 
-                                    type="password" 
-                                    className="input" 
-                                    value={vercelToken} 
-                                    onChange={e => setVercelToken(e.target.value)}
-                                    placeholder="Leave empty to use VERCEL_TOKEN env var"
-                                    style={{ width: '100%', marginBottom: '1rem' }}
+  </div>
+  < div className = "form-group" >
+    <label style={ { display: 'block', marginBottom: '0.5rem', color: '#ccc' } }>
+      Vercel Token < span style = {{ color: '#9ca3af', fontSize: '0.875rem' }}> (optional) </span>
+        </label>
+        < input
+type = "password"
+className = "input"
+value = { vercelToken }
+onChange = { e => setVercelToken(e.target.value) }
+placeholder = "Leave empty to use VERCEL_TOKEN env var"
+style = {{ width: '100%', marginBottom: '1rem' }}
                                 />
-                            </div>
-                            <div className="form-group">
-                                <label style={{ display: 'block', marginBottom: '0.5rem', color: '#ccc' }}>
-                                    Vercel Org ID <span style={{ color: '#9ca3af', fontSize: '0.875rem' }}>(optional)</span>
-                                </label>
-                                <input 
-                                    type="text" 
-                                    className="input" 
-                                    value={vercelOrgId} 
-                                    onChange={e => setVercelOrgId(e.target.value)}
-                                    placeholder="Leave empty to use VERCEL_ORG_ID env var"
-                                    style={{ width: '100%', marginBottom: '1rem' }}
+  </div>
+  < div className = "form-group" >
+    <label style={ { display: 'block', marginBottom: '0.5rem', color: '#ccc' } }>
+      Vercel Org ID < span style = {{ color: '#9ca3af', fontSize: '0.875rem' }}> (optional) </span>
+        </label>
+        < input
+type = "text"
+className = "input"
+value = { vercelOrgId }
+onChange = { e => setVercelOrgId(e.target.value) }
+placeholder = "Leave empty to use VERCEL_ORG_ID env var"
+style = {{ width: '100%', marginBottom: '1rem' }}
                                 />
-                            </div>
-                            <div className="form-group">
-                                <label style={{ display: 'block', marginBottom: '0.5rem', color: '#ccc' }}>
-                                    Vercel Project ID <span style={{ color: '#9ca3af', fontSize: '0.875rem' }}>(optional)</span>
-                                </label>
-                                <input 
-                                    type="text" 
-                                    className="input" 
-                                    value={vercelProjectId} 
-                                    onChange={e => setVercelProjectId(e.target.value)}
-                                    placeholder="Leave empty to use VERCEL_PROJECT_ID env var"
-                                    style={{ width: '100%', marginBottom: '1rem' }}
+  </div>
+  < div className = "form-group" >
+    <label style={ { display: 'block', marginBottom: '0.5rem', color: '#ccc' } }>
+      Vercel Project ID < span style = {{ color: '#9ca3af', fontSize: '0.875rem' }}> (optional) </span>
+        </label>
+        < input
+type = "text"
+className = "input"
+value = { vercelProjectId }
+onChange = { e => setVercelProjectId(e.target.value) }
+placeholder = "Leave empty to use VERCEL_PROJECT_ID env var"
+style = {{ width: '100%', marginBottom: '1rem' }}
                                 />
-                            </div>
-                            <div className="modal-actions" style={{ display: 'flex', justifyContent: 'flex-end', gap: '1rem', marginTop: '1.5rem' }}>
-                                <button type="button" className="btn btn-secondary" onClick={onClose}>Cancel</button>
-                                <button type="submit" className="btn btn-primary" disabled={loading}>
-                                    {loading ? 'Deploying...' : 'Deploy'}
-                                </button>
-                            </div>
-                        </form>
-                    </div>
-                </div>
+  </div>
+  < div className = "modal-actions" style = {{ display: 'flex', justifyContent: 'flex-end', gap: '1rem', marginTop: '1.5rem' }}>
+    <button type="button" className = "btn btn-secondary" onClick = { onClose } > Cancel </button>
+      < button type = "submit" className = "btn btn-primary" disabled = { loading } >
+        { loading? 'Deploying...': 'Deploy' }
+        </button>
+        </div>
+        </form>
+        </div>
+        </div>
             );
         }
 
 
-        function CreateProjectModal({ onCreate, onClose }) {
-            const [data, setData] = useState({ name: '', description: '', framework: 'react' });
+function CreateProjectModal({ onCreate, onClose }) {
+  const [data, setData] = useState({ name: '', description: '', framework: 'react' });
 
-            const handleSubmit = (e) => {
-                e.preventDefault();
-                if (data.name.trim()) {
-                    onCreate(data);
-                }
-            };
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    if (data.name.trim()) {
+      onCreate(data);
+    }
+  };
 
-            return (
-                <div className="modal">
-                    <div className="modal-content">
-                        <h2>Create Project</h2>
-                        <form onSubmit={handleSubmit}>
-                            <input
+  return (
+    <div className= "modal" >
+    <div className="modal-content" >
+      <h2>Create Project </h2>
+        < form onSubmit = { handleSubmit } >
+          <input
                                 type="text"
-                                placeholder="Project Name"
-                                value={data.name}
-                                onChange={(e) => setData({...data, name: e.target.value})}
-                                className="input"
-                                required
-                                autoFocus
-                            />
-                            <textarea
+  placeholder = "Project Name"
+  value = { data.name }
+  onChange = {(e) => setData({ ...data, name: e.target.value })
+}
+className = "input"
+required
+autoFocus
+  />
+  <textarea
                                 placeholder="Description"
-                                value={data.description}
-                                onChange={(e) => setData({...data, description: e.target.value})}
-                                className="input"
-                                style={{ minHeight: '80px' }}
+value = { data.description }
+onChange = {(e) => setData({ ...data, description: e.target.value })}
+className = "input"
+style = {{ minHeight: '80px' }}
                             />
-                            <select
-                                value={data.framework}
-                                onChange={(e) => setData({...data, framework: e.target.value})}
-                                className="input"
-                            >
-                                <option value="react">React</option>
-                                <option value="vue">Vue.js</option>
-                                <option value="angular">Angular</option>
-                                <option value="nextjs">Next.js</option>
-                                <option value="vanilla">Vanilla JS</option>
-                                <option value="node">Node.js</option>
-                            </select>
-                            <div style={{ display: 'flex', gap: '0.5rem', marginTop: '1rem' }}>
-                                <button type="button" className="btn btn-secondary" onClick={onClose}>
-                                    Cancel
-                                </button>
-                                <button type="submit" className="btn btn-primary">
-                                    Create
-                                </button>
-                            </div>
-                        </form>
+  < select
+value = { data.framework }
+onChange = {(e) => setData({ ...data, framework: e.target.value })}
+className = "input"
+  >
+  <option value="react" > React </option>
+    < option value = "vue" > Vue.js </option>
+      < option value = "angular" > Angular </option>
+        < option value = "nextjs" > Next.js </option>
+          < option value = "vanilla" > Vanilla JS </option>
+            < option value = "node" > Node.js </option>
+              </select>
+              < div style = {{ display: 'flex', gap: '0.5rem', marginTop: '1rem' }}>
+                <button type="button" className = "btn btn-secondary" onClick = { onClose } >
+                  Cancel
+                  </button>
+                  < button type = "submit" className = "btn btn-primary" >
+                    Create
+                    </button>
                     </div>
-                </div>
+                    </form>
+                    </div>
+                    </div>
             );
         }
 
-        ReactDOM.render(<App />, document.getElementById('root'));
-    </script>
-</body>
-</html>
-  `);
+ReactDOM.render(<App />, document.getElementById('root'));
+</script>
+  </body>
+  </html>
+    `);
 });
 
 async function startServer() {
@@ -8050,13 +8035,13 @@ async function startServer() {
     console.log('🎯 UI Dashboard: http://localhost:' + PORT + '\n');
 
     console.log('✅ Ollama Configuration:');
-    console.log(`   Model: ${OLLAMA_MODEL}`);
-    console.log(`   API: ${OLLAMA_API_URL}`);
-    console.log(`   Available Models: qwen3:4b, llama3, llama3.2\n`);
+    console.log(`   Model: ${OLLAMA_MODEL} `);
+    console.log(`   API: ${OLLAMA_API_URL} `);
+    console.log(`   Available Models: qwen3: 4b, llama3, llama3.2\n`);
 
     console.log('✅ GitHub Configuration:');
-    console.log(`   Owner: ${GITHUB_OWNER}`);
-    console.log(`   Visibility: ${GITHUB_DEFAULT_VISIBILITY}\n`);
+    console.log(`   Owner: ${GITHUB_OWNER} `);
+    console.log(`   Visibility: ${GITHUB_DEFAULT_VISIBILITY} \n`);
 
     console.log('✨ Features:');
     console.log('   ✅ Local Ollama AI integration');
@@ -8078,7 +8063,7 @@ async function startServer() {
     console.log('✅ Standalone UI configured\n');
 
     server.listen(PORT, () => {
-      console.log(`✅ Server running on port ${PORT}`);
+      console.log(`✅ Server running on port ${PORT} `);
       console.log(`🎯 Open http://localhost:${PORT} in your browser\n`);
       console.log('How to use:');
       console.log('1. Make sure Ollama is running on http://localhost:11434');

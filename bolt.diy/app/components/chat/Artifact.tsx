@@ -9,6 +9,7 @@ import { classNames } from '~/utils/classNames';
 import { cubicEasingFn } from '~/utils/easings';
 import { WORK_DIR } from '~/utils/constants';
 import SendToDyadButton from '../ui/SendToDyadButton';
+import { useAuth } from '../auth/AuthProvider';
 
 const highlighterOptions = {
   langs: ['shell'],
@@ -34,6 +35,7 @@ export const Artifact = memo(({ messageId, chatId }: ArtifactProps) => {
   const userToggledActions = useRef(false);
   const [showActions, setShowActions] = useState(false);
   const [allActionFinished, setAllActionFinished] = useState(false);
+  const { token } = useAuth(); // Get auth token for BackBench uploads
 
   const artifacts = useStore(workbenchStore.artifacts);
   const artifact = artifacts[messageId];
@@ -325,9 +327,17 @@ export const Artifact = memo(({ messageId, chatId }: ArtifactProps) => {
                 const projectId = `bolt-${Math.random().toString(36).slice(2, 9)}`;
                 const projectName = artifact?.title ?? document.title ?? 'bolt-generated-app';
 
+                // Prepare headers with authentication
+                const headers: HeadersInit = {
+                  'Content-Type': 'application/json'
+                };
+                if (token) {
+                  headers['Authorization'] = `Bearer ${token}`;
+                }
+
                 const resp = await fetch(`${VITE_DYAD_BACKEND_URL}/api/sync/files`, {
                   method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
+                  headers,
                   body: JSON.stringify({
                     projectId,
                     projectName,

@@ -378,7 +378,9 @@ export const Workbench = memo(
       [metadata, updateChatMestaData],
     );
 
-    const isWorkbenchAvailable = chatStarted;
+    // Show workbench when either chat has started OR when there are files generated
+    const hasFiles = Object.keys(files).length > 0;
+    const isWorkbenchAvailable = chatStarted || hasFiles;
 
     return (
       <motion.div

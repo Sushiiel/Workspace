@@ -89,38 +89,13 @@ export const languageModels = sqliteTable("language_models", {
   updatedAt: integer("updated_at").default(sql`(unixepoch())`).notNull(),
 });
 
-// =================== AUTHENTICATION ===================
-
-export const users = sqliteTable("users", {
-  id: text("id").primaryKey().notNull(),
-  email: text("email").notNull().unique(),
-  passwordHash: text("password_hash").notNull(),
-  name: text("name"),
-  createdAt: integer("created_at").default(sql`(unixepoch())`).notNull(),
-  updatedAt: integer("updated_at").default(sql`(unixepoch())`).notNull(),
-});
-
-export const userCredentials = sqliteTable("user_credentials", {
-  id: text("id").primaryKey().notNull(),
-  userId: text("user_id")
-    .notNull()
-    .references(() => users.id, { onDelete: "cascade" }),
-  credentialType: text("credential_type", {
-    enum: ["github_token", "vercel_token", "vercel_org_id", "vercel_project_id"],
-  }).notNull(),
-  encryptedValue: text("encrypted_value").notNull(),
-  iv: text("iv").notNull(),
-  createdAt: integer("created_at").default(sql`(unixepoch())`).notNull(),
-  updatedAt: integer("updated_at").default(sql`(unixepoch())`).notNull(),
-});
+// =================== AUTHENTICATION (REMOVED) ===================
+// Authentication has been disabled
 
 // =================== BOLT PROJECTS ===================
 
 export const boltProjects = sqliteTable("bolt_projects", {
   id: text("id").primaryKey().notNull(),
-  userId: text("user_id")
-    .notNull()
-    .references(() => users.id, { onDelete: "cascade" }),
   name: text("name").notNull(),
   description: text("description"),
   template: text("template"),
@@ -137,9 +112,6 @@ export const boltProjects = sqliteTable("bolt_projects", {
 
 export const boltFiles = sqliteTable("bolt_files", {
   id: text("id").primaryKey().notNull(),
-  userId: text("user_id")
-    .notNull()
-    .references(() => users.id, { onDelete: "cascade" }),
   projectId: text("project_id")
     .notNull()
     .references(() => boltProjects.id, { onDelete: "cascade" }),
@@ -198,9 +170,6 @@ export const analytics = sqliteTable("analytics", {
 
 export const platformConfigs = sqliteTable("platform_configs", {
   id: text("id").primaryKey().notNull(),
-  userId: text("user_id")
-    .notNull()
-    .references(() => users.id, { onDelete: "cascade" }),
   platform: text("platform", {
     enum: ["vercel", "netlify", "cloudflare", "railway", "github"],
   }).notNull(),

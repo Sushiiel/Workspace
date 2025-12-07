@@ -1,6 +1,5 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState } from 'react';
 import type { ReactNode } from 'react';
-import Cookies from 'js-cookie';
 
 interface User {
     id: string;
@@ -21,135 +20,41 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-const DYAD_BACKEND_URL = import.meta.env.VITE_DYAD_BACKEND_URL || 'http://localhost:9999';
-const TOKEN_KEY = 'dyad_auth_token';
-const USER_KEY = 'dyad_user';
+// Authentication is disabled - default anonymous user
+const DEFAULT_USER: User = {
+    id: 'anonymous',
+    email: 'anonymous@workspace.local',
+    name: 'Anonymous User'
+};
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-    const [user, setUser] = useState<User | null>(null);
-    const [token, setToken] = useState<string | null>(null);
-    const [isLoading, setIsLoading] = useState(true);
+    // Always authenticated with default user
+    const [user] = useState<User>(DEFAULT_USER);
+    const [token] = useState<string>('disabled');
+    const [isLoading] = useState(false);
 
-    // Load user and token from storage on mount
-    useEffect(() => {
-        // Only run on client side
-        if (typeof window === 'undefined') {
-            setIsLoading(false);
-            return;
-        }
-
-        const storedToken = Cookies.get(TOKEN_KEY) || localStorage.getItem(TOKEN_KEY);
-        const storedUser = localStorage.getItem(USER_KEY);
-
-        if (storedToken && storedUser) {
-            try {
-                setToken(storedToken);
-                setUser(JSON.parse(storedUser));
-            } catch (error) {
-                console.error('Error loading stored auth:', error);
-                // Clear invalid data
-                Cookies.remove(TOKEN_KEY);
-                localStorage.removeItem(TOKEN_KEY);
-                localStorage.removeItem(USER_KEY);
-            }
-        }
-        setIsLoading(false);
-    }, []);
-
+    // Stub functions - authentication is disabled
     const login = async (email: string, password: string) => {
-        try {
-            const response = await fetch(`${DYAD_BACKEND_URL}/api/auth/login`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ email, password }),
-            });
-
-            if (!response.ok) {
-                const error = await response.json();
-                throw new Error(error.error || 'Login failed');
-            }
-
-            const data = await response.json();
-
-            // Store token and user
-            setToken(data.token);
-            setUser(data.user);
-
-            // Persist to storage
-            Cookies.set(TOKEN_KEY, data.token, { expires: 7 }); // 7 days
-            localStorage.setItem(TOKEN_KEY, data.token);
-            localStorage.setItem(USER_KEY, JSON.stringify(data.user));
-        } catch (error) {
-            console.error('Login error:', error);
-            throw error;
-        }
+        console.log('Login disabled - authentication removed from system');
     };
 
     const register = async (email: string, password: string, name?: string) => {
-        try {
-            const response = await fetch(`${DYAD_BACKEND_URL}/api/auth/register`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ email, password, name }),
-            });
-
-            if (!response.ok) {
-                const error = await response.json();
-                throw new Error(error.error || 'Registration failed');
-            }
-
-            const data = await response.json();
-
-            // Store token and user
-            setToken(data.token);
-            setUser(data.user);
-
-            // Persist to storage
-            Cookies.set(TOKEN_KEY, data.token, { expires: 7 });
-            localStorage.setItem(TOKEN_KEY, data.token);
-            localStorage.setItem(USER_KEY, JSON.stringify(data.user));
-        } catch (error) {
-            console.error('Registration error:', error);
-            throw error;
-        }
+        console.log('Registration disabled - authentication removed from system');
     };
 
     const logout = () => {
-        setToken(null);
-        setUser(null);
-        Cookies.remove(TOKEN_KEY);
-        localStorage.removeItem(TOKEN_KEY);
-        localStorage.removeItem(USER_KEY);
+        console.log('Logout disabled - authentication removed from system');
     };
 
     const refreshUser = async () => {
-        if (!token) return;
-
-        try {
-            const response = await fetch(`${DYAD_BACKEND_URL}/api/auth/me`, {
-                headers: { 'Authorization': `Bearer ${token}` },
-            });
-
-            if (!response.ok) {
-                // Token is invalid, logout
-                logout();
-                return;
-            }
-
-            const userData = await response.json();
-            setUser(userData);
-            localStorage.setItem(USER_KEY, JSON.stringify(userData));
-        } catch (error) {
-            console.error('Error refreshing user:', error);
-            logout();
-        }
+        // No-op
     };
 
     const value: AuthContextType = {
         user,
         token,
-        isAuthenticated: !!token && !!user,
-        isLoading,
+        isAuthenticated: true, // Always authenticated
+        isLoading: false,
         login,
         register,
         logout,
